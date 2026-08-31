@@ -1,8 +1,11 @@
-use crate::device::{DeviceError, DeviceSnapshot, Disc, Group, MinidiscDevice, Track};
+use crate::device::{
+    DeviceError, DeviceSnapshot, Disc, Group, MinidiscDevice, RawUploadFormat, Track,
+    UploadRequest, UploadResult,
+};
 use async_trait::async_trait;
 use cross_usb::get_device_list;
 use minidisc::netmd::base::DEVICE_IDS_CROSSUSB;
-use minidisc::netmd::interface::DiscFlag;
+use minidisc::netmd::interface::{DiscFlag, MDTrack, WireFormat};
 use minidisc::netmd::NetMDContext;
 
 pub struct NetMdDevice {
@@ -43,6 +46,29 @@ impl MinidiscDevice for NetMdDevice {
         let disc = read_disc(&mut self.context).await?;
 
         Ok(DeviceSnapshot { device_name, disc })
+    }
+
+    async fn upload_raw(&mut self, request: UploadRequest) -> Result<UploadResult, DeviceError> {
+        ensure_disc_writable(&mut self.context).await?;
+
+        let track = MDTrack {
+            title: request.title,
+            format: wire_format(request.format),
+            data: request.data,
+            chunk_size: 0x400,
+            full_width_title: None,
+        };
+
+        let (track_index, _uuid, _ccid) = self
+            .context
+            .download(track, |total: usize, written: usize| {
+                eprint!("\rUploading: {written}/{total} bytes");
+            })
+            .await
+            .map_err(|err| DeviceError::Upload(err.to_string()))?;
+
+        eprintln!();
+        Ok(UploadResult { track_index })
     }
 }
 
@@ -133,6 +159,32 @@ async fn read_disc(context: &mut NetMDContext) -> Result<Disc, DeviceError> {
         track_count: track_count as usize,
         groups,
     })
+}
+
+async fn ensure_disc_writable(context: &mut NetMDContext) -> Result<(), DeviceError> {
+    let flags = context
+        .interface_mut()
+        .disc_flags()
+        .await
+        .map_err(|err| DeviceError::ListContent(err.to_string()))?;
+
+    if (flags & DiscFlag::WriteProtected as u8) != 0 {
+        return Err(DeviceError::WriteProtected);
+    }
+
+    if (flags & DiscFlag::Writable as u8) == 0 {
+        return Err(DeviceError::NotWritable);
+    }
+
+    Ok(())
+}
+
+fn wire_format(format: RawUploadFormat) -> WireFormat {
+    match format {
+        RawUploadFormat::Sp => WireFormat::Pcm,
+        RawUploadFormat::Lp2 => WireFormat::LP2,
+        RawUploadFormat::Lp4 => WireFormat::LP4,
+    }
 }
 
 fn blank_to_none(value: String) -> Option<String> {

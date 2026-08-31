@@ -4,6 +4,7 @@ use serde::Serialize;
 #[async_trait]
 pub trait MinidiscDevice {
     async fn snapshot(&mut self) -> Result<DeviceSnapshot, DeviceError>;
+    async fn upload_raw(&mut self, request: UploadRequest) -> Result<UploadResult, DeviceError>;
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,6 +42,25 @@ pub struct Track {
     pub protected: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct UploadRequest {
+    pub title: String,
+    pub format: RawUploadFormat,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum RawUploadFormat {
+    Sp,
+    Lp2,
+    Lp4,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadResult {
+    pub track_index: u16,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceError {
     #[error("no supported NetMD device was found on USB")]
@@ -54,4 +74,13 @@ pub enum DeviceError {
 
     #[error("could not read disc contents: {0}")]
     ListContent(String),
+
+    #[error("the inserted disc is not writable")]
+    NotWritable,
+
+    #[error("the inserted disc is write-protected")]
+    WriteProtected,
+
+    #[error("could not upload track: {0}")]
+    Upload(String),
 }

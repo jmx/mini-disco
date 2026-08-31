@@ -1,4 +1,5 @@
 mod app;
+mod audio;
 mod cli;
 mod device;
 mod netmd;
