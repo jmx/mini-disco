@@ -1,6 +1,6 @@
 use crate::device::{
     md_time_frames_to_seconds, DeviceError, DeviceSnapshot, Disc, Group, MinidiscDevice,
-    PreparedUpload, RawUploadFormat, Track, UploadResult,
+    PlaybackCommand, PreparedUpload, RawUploadFormat, Track, UploadResult,
 };
 use async_trait::async_trait;
 use cross_usb::get_device_list;
@@ -84,6 +84,49 @@ impl MinidiscDevice for NetMdDevice {
 
         eprintln!();
         Ok(UploadResult { track_index })
+    }
+
+    async fn rename_disc(&mut self, title: String) -> Result<(), DeviceError> {
+        ensure_disc_writable(&mut self.context)
+            .await
+            .map_err(map_rename_precondition_error)?;
+        self.context
+            .rename_disc(&title, None)
+            .await
+            .map_err(|err| DeviceError::RenameDisc(err.to_string()))
+    }
+
+    async fn rename_track(&mut self, track_index: u16, title: String) -> Result<(), DeviceError> {
+        ensure_track_write_allowed(&mut self.context, track_index)
+            .await
+            .map_err(map_rename_track_precondition_error)?;
+        self.context
+            .interface_mut()
+            .set_track_title(track_index, &title, false)
+            .await
+            .map_err(|err| DeviceError::RenameTrack(err.to_string()))
+    }
+
+    async fn delete_track(&mut self, track_index: u16) -> Result<(), DeviceError> {
+        ensure_track_write_allowed(&mut self.context, track_index)
+            .await
+            .map_err(map_delete_track_precondition_error)?;
+        self.context
+            .interface_mut()
+            .erase_track(track_index)
+            .await
+            .map_err(|err| DeviceError::DeleteTrack(err.to_string()))
+    }
+
+    async fn playback(&mut self, command: PlaybackCommand) -> Result<(), DeviceError> {
+        match command {
+            PlaybackCommand::Play => self.context.interface_mut().play().await,
+            PlaybackCommand::Pause => self.context.interface_mut().pause().await,
+            PlaybackCommand::Stop => self.context.interface_mut().stop().await,
+            PlaybackCommand::Next => self.context.next_track().await,
+            PlaybackCommand::Previous => self.context.previous_track().await,
+        }
+        .map_err(|err| DeviceError::Playback(err.to_string()))
     }
 }
 
@@ -191,21 +234,10 @@ async fn ensure_upload_allowed(
     context: &mut NetMDContext,
     md_time_frames_needed: u64,
 ) -> Result<(), DeviceError> {
-    let interface = context.interface_mut();
-    let flags = interface
-        .disc_flags()
-        .await
-        .map_err(|err| DeviceError::ListContent(err.to_string()))?;
+    ensure_disc_writable(context).await?;
 
-    if (flags & DiscFlag::WriteProtected as u8) != 0 {
-        return Err(DeviceError::WriteProtected);
-    }
-
-    if (flags & DiscFlag::Writable as u8) == 0 {
-        return Err(DeviceError::NotWritable);
-    }
-
-    let capacity = interface
+    let capacity = context
+        .interface_mut()
         .disc_capacity()
         .await
         .map_err(|err| DeviceError::ListContent(err.to_string()))?;
@@ -224,6 +256,67 @@ async fn ensure_upload_allowed(
     }
 
     Ok(())
+}
+
+async fn ensure_disc_writable(context: &mut NetMDContext) -> Result<(), DeviceError> {
+    let interface = context.interface_mut();
+    let flags = interface
+        .disc_flags()
+        .await
+        .map_err(|err| DeviceError::ListContent(err.to_string()))?;
+
+    if (flags & DiscFlag::WriteProtected as u8) != 0 {
+        return Err(DeviceError::WriteProtected);
+    }
+
+    if (flags & DiscFlag::Writable as u8) == 0 {
+        return Err(DeviceError::NotWritable);
+    }
+
+    Ok(())
+}
+
+fn map_rename_precondition_error(err: DeviceError) -> DeviceError {
+    match err {
+        DeviceError::ListContent(message) => DeviceError::RenameDisc(message),
+        other => other,
+    }
+}
+
+async fn ensure_track_write_allowed(
+    context: &mut NetMDContext,
+    track_index: u16,
+) -> Result<(), DeviceError> {
+    ensure_disc_writable(context).await?;
+
+    let track_count = context
+        .interface_mut()
+        .track_count()
+        .await
+        .map_err(|err| DeviceError::ListContent(err.to_string()))?;
+
+    if track_index >= track_count {
+        return Err(DeviceError::TrackNumberOutOfRange {
+            track_number: track_index + 1,
+            track_count,
+        });
+    }
+
+    Ok(())
+}
+
+fn map_rename_track_precondition_error(err: DeviceError) -> DeviceError {
+    match err {
+        DeviceError::ListContent(message) => DeviceError::RenameTrack(message),
+        other => other,
+    }
+}
+
+fn map_delete_track_precondition_error(err: DeviceError) -> DeviceError {
+    match err {
+        DeviceError::ListContent(message) => DeviceError::DeleteTrack(message),
+        other => other,
+    }
 }
 
 fn wire_format(format: RawUploadFormat) -> WireFormat {

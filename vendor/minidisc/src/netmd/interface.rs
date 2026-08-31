@@ -1250,7 +1250,7 @@ impl NetMDInterface {
             vec![QueryValue::Number(track as i64)],
         )?;
 
-        let _result = self.send_query(&query, false, false).await;
+        self.send_query(&query, false, false).await?;
 
         Ok(())
     }

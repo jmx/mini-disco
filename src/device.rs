@@ -5,6 +5,10 @@ use serde::Serialize;
 pub trait MinidiscDevice {
     async fn snapshot(&mut self) -> Result<DeviceSnapshot, DeviceError>;
     async fn upload_raw(&mut self, request: PreparedUpload) -> Result<UploadResult, DeviceError>;
+    async fn rename_disc(&mut self, title: String) -> Result<(), DeviceError>;
+    async fn rename_track(&mut self, track_index: u16, title: String) -> Result<(), DeviceError>;
+    async fn delete_track(&mut self, track_index: u16) -> Result<(), DeviceError>;
+    async fn playback(&mut self, command: PlaybackCommand) -> Result<(), DeviceError>;
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +110,15 @@ pub enum RawUploadFormat {
     Lp4,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackCommand {
+    Play,
+    Pause,
+    Stop,
+    Next,
+    Previous,
+}
+
 impl RawUploadFormat {
     pub fn frame_size(self) -> usize {
         match self {
@@ -177,6 +190,24 @@ pub enum DeviceError {
 
     #[error("could not upload track: {0}")]
     Upload(String),
+
+    #[error("could not rename disc: {0}")]
+    RenameDisc(String),
+
+    #[error("track number must be at least 1")]
+    TrackNumberZero,
+
+    #[error("track {track_number} does not exist; disc has {track_count} tracks")]
+    TrackNumberOutOfRange { track_number: u16, track_count: u16 },
+
+    #[error("could not rename track: {0}")]
+    RenameTrack(String),
+
+    #[error("could not delete track: {0}")]
+    DeleteTrack(String),
+
+    #[error("could not control playback: {0}")]
+    Playback(String),
 }
 
 #[cfg(test)]

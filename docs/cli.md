@@ -14,6 +14,14 @@ cargo run -- upload song.mp3 --format lp105 --title "Track Title"
 cargo run -- upload song.flac --format lp4 --title "Track Title"
 cargo run -- upload-raw track.raw --format sp --title "Track Title"
 cargo run -- convert song.mp3 pinball-sp.raw
+cargo run -- rename-disc "Disc Title"
+cargo run -- rename-track 3 "Track Title"
+cargo run -- delete-track 3
+cargo run -- play
+cargo run -- pause
+cargo run -- stop
+cargo run -- next
+cargo run -- prev
 cargo run -- doctor
 ```
 
@@ -27,6 +35,14 @@ Importing existing ATRAC1/AEA SP files still needs Web MiniDisc's factory/exploi
 
 `convert` writes those prepared raw bytes without opening a NetMD device. Use it to inspect the conversion step or to test the same output through `upload-raw`.
 
+`rename-disc` updates the inserted disc title while preserving group metadata. It refuses to write to a read-only or write-protected disc and prints the refreshed disc contents after a successful rename.
+
+`rename-track` updates one track title by the same 1-based number shown by `list`. It refuses to write to a read-only or write-protected disc, validates that the track exists, and prints the refreshed disc contents after a successful rename.
+
+`delete-track` removes one track by the same 1-based number shown by `list`. It refuses to write to a read-only or write-protected disc, validates that the track exists, and prints the refreshed disc contents after a successful delete.
+
+`play`, `pause`, `stop`, `next`, and `prev` control playback on the attached device. These commands do not modify the disc and do not require a writable disc.
+
 To create a raw SP file manually:
 
 ```sh
@@ -37,4 +53,4 @@ ffmpeg -i song.wav -vn -ac 2 -ar 44100 -acodec pcm_s16be -f s16be track.raw
 
 ## Scope
 
-This iteration only supports listing, SP/LP2/LP105/LP4 file conversion through external tools, and prepared raw uploads. Rename, delete, playback, factory ATRAC1 SP import, TUI, and cross-platform support are intentionally deferred behind the internal device boundary.
+This iteration only supports listing, disc rename, track rename/delete, playback controls, SP/LP2/LP105/LP4 file conversion through external tools, and prepared raw uploads. Factory ATRAC1 SP import, TUI, and cross-platform support are intentionally deferred behind the internal device boundary.

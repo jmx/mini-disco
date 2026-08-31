@@ -59,6 +59,42 @@ pub enum Command {
         format: RawFormat,
     },
 
+    /// Rename the inserted disc while preserving group metadata.
+    RenameDisc {
+        /// New disc title. Pass an empty string to clear the title.
+        title: String,
+    },
+
+    /// Rename one track by its displayed 1-based track number.
+    RenameTrack {
+        /// Track number as shown by `list`.
+        track: u16,
+
+        /// New track title. Pass an empty string to clear the title.
+        title: String,
+    },
+
+    /// Delete one track by its displayed 1-based track number.
+    DeleteTrack {
+        /// Track number as shown by `list`.
+        track: u16,
+    },
+
+    /// Start or resume playback on the attached NetMD device.
+    Play,
+
+    /// Pause playback on the attached NetMD device.
+    Pause,
+
+    /// Stop playback on the attached NetMD device.
+    Stop,
+
+    /// Skip to the next track on the attached NetMD device.
+    Next,
+
+    /// Skip to the previous track on the attached NetMD device.
+    Prev,
+
     /// Show Linux USB permission diagnostics and udev setup guidance.
     Doctor,
 }

@@ -1,6 +1,8 @@
 use crate::audio;
 use crate::cli::{Cli, Command, RawFormat};
-use crate::device::{MinidiscDevice, PreparedUpload, RawUploadFormat, UploadRequest};
+use crate::device::{
+    MinidiscDevice, PlaybackCommand, PreparedUpload, RawUploadFormat, UploadRequest,
+};
 use crate::netmd::NetMdDevice;
 use crate::output::{print_disc_human, print_disc_json};
 use crate::udev;
@@ -25,6 +27,14 @@ pub async fn run(cli: Cli) -> Result<ExitCode> {
             output,
             format,
         } => convert(input, output, format),
+        Command::RenameDisc { title } => rename_disc(title).await,
+        Command::RenameTrack { track, title } => rename_track(track, title).await,
+        Command::DeleteTrack { track } => delete_track(track).await,
+        Command::Play => playback(PlaybackCommand::Play, "Started playback").await,
+        Command::Pause => playback(PlaybackCommand::Pause, "Paused playback").await,
+        Command::Stop => playback(PlaybackCommand::Stop, "Stopped playback").await,
+        Command::Next => playback(PlaybackCommand::Next, "Skipped to next track").await,
+        Command::Prev => playback(PlaybackCommand::Previous, "Skipped to previous track").await,
         Command::Doctor => {
             udev::print_doctor();
             Ok(ExitCode::SUCCESS)
@@ -121,6 +131,129 @@ async fn upload_raw(
     upload_request(request).await
 }
 
+async fn rename_disc(title: String) -> Result<ExitCode> {
+    let mut device = match NetMdDevice::connect_first().await {
+        Ok(device) => device,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            udev::print_doctor_to_stderr();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    match device.rename_disc(title).await {
+        Ok(()) => {
+            println!("Renamed disc");
+            println!();
+            match device.snapshot().await {
+                Ok(snapshot) => print_disc_human(&snapshot),
+                Err(err) => eprintln!("Renamed, but could not refresh disc contents: {err}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn rename_track(track_number: u16, title: String) -> Result<ExitCode> {
+    let track_index = match track_number_to_index(track_number) {
+        Ok(track_index) => track_index,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    let mut device = match NetMdDevice::connect_first().await {
+        Ok(device) => device,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            udev::print_doctor_to_stderr();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    match device.rename_track(track_index, title).await {
+        Ok(()) => {
+            println!("Renamed track {track_number}");
+            println!();
+            match device.snapshot().await {
+                Ok(snapshot) => print_disc_human(&snapshot),
+                Err(err) => eprintln!("Renamed, but could not refresh disc contents: {err}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn delete_track(track_number: u16) -> Result<ExitCode> {
+    let track_index = match track_number_to_index(track_number) {
+        Ok(track_index) => track_index,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    let mut device = match NetMdDevice::connect_first().await {
+        Ok(device) => device,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            udev::print_doctor_to_stderr();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    match device.delete_track(track_index).await {
+        Ok(()) => {
+            println!("Deleted track {track_number}");
+            println!();
+            match device.snapshot().await {
+                Ok(snapshot) => print_disc_human(&snapshot),
+                Err(err) => eprintln!("Deleted, but could not refresh disc contents: {err}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn playback(command: PlaybackCommand, success_message: &str) -> Result<ExitCode> {
+    let mut device = match NetMdDevice::connect_first().await {
+        Ok(device) => device,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            udev::print_doctor_to_stderr();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    match device.playback(command).await {
+        Ok(()) => {
+            println!("{success_message}");
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
 async fn upload_request(request: UploadRequest) -> Result<ExitCode> {
     let request = match request.prepare() {
         Ok(request) => request,
@@ -159,6 +292,12 @@ async fn upload_request(request: UploadRequest) -> Result<ExitCode> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn track_number_to_index(track_number: u16) -> Result<u16, crate::device::DeviceError> {
+    track_number
+        .checked_sub(1)
+        .ok_or(crate::device::DeviceError::TrackNumberZero)
 }
 
 fn print_upload_failure_hint(format: RawUploadFormat, err: &crate::device::DeviceError) {
@@ -205,4 +344,24 @@ fn fallback_title(path: &std::path::Path) -> String {
         .filter(|stem| !stem.trim().is_empty())
         .unwrap_or("Untitled Track")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::track_number_to_index;
+    use crate::device::DeviceError;
+
+    #[test]
+    fn converts_display_track_number_to_netmd_index() {
+        assert_eq!(track_number_to_index(1).unwrap(), 0);
+        assert_eq!(track_number_to_index(42).unwrap(), 41);
+    }
+
+    #[test]
+    fn rejects_zero_track_number() {
+        assert!(matches!(
+            track_number_to_index(0).unwrap_err(),
+            DeviceError::TrackNumberZero
+        ));
+    }
 }
