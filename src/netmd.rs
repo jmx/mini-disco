@@ -1,6 +1,6 @@
 use crate::device::{
-    DeviceError, DeviceSnapshot, Disc, Group, MinidiscDevice, RawUploadFormat, Track,
-    UploadRequest, UploadResult,
+    md_time_frames_to_seconds, DeviceError, DeviceSnapshot, Disc, Group, MinidiscDevice,
+    PreparedUpload, RawUploadFormat, Track, UploadResult,
 };
 use async_trait::async_trait;
 use cross_usb::get_device_list;
@@ -43,13 +43,27 @@ impl MinidiscDevice for NetMdDevice {
             .device_name()
             .unwrap_or("Unknown NetMD device")
             .to_string();
+        let vendor_id = self.context.interface().device.vendor_id();
+        let product_id = self.context.interface().device.product_id();
+        let recording_parameters = self
+            .context
+            .interface_mut()
+            .recording_parameters()
+            .await
+            .ok();
         let disc = read_disc(&mut self.context).await?;
 
-        Ok(DeviceSnapshot { device_name, disc })
+        Ok(DeviceSnapshot {
+            device_name,
+            vendor_id,
+            product_id,
+            recording_parameters,
+            disc,
+        })
     }
 
-    async fn upload_raw(&mut self, request: UploadRequest) -> Result<UploadResult, DeviceError> {
-        ensure_disc_writable(&mut self.context).await?;
+    async fn upload_raw(&mut self, request: PreparedUpload) -> Result<UploadResult, DeviceError> {
+        ensure_upload_allowed(&mut self.context, request.required_md_time_frames()).await?;
 
         let track = MDTrack {
             title: request.title,
@@ -63,6 +77,7 @@ impl MinidiscDevice for NetMdDevice {
             .context
             .download(track, |total: usize, written: usize| {
                 eprint!("\rUploading: {written}/{total} bytes");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
             })
             .await
             .map_err(|err| DeviceError::Upload(err.to_string()))?;
@@ -128,7 +143,7 @@ async fn read_disc(context: &mut NetMDContext) -> Result<Disc, DeviceError> {
             tracks.push(Track {
                 index: track_index,
                 title: blank_to_none(title),
-                duration_seconds: Some(duration.as_duration().as_secs()),
+                duration_seconds: Some(md_time_frames_to_seconds(duration.as_frames())),
                 channels: Some(match channels {
                     minidisc::netmd::interface::Channels::Mono => 1,
                     minidisc::netmd::interface::Channels::Stereo => 2,
@@ -149,21 +164,35 @@ async fn read_disc(context: &mut NetMDContext) -> Result<Disc, DeviceError> {
         });
     }
 
+    let mut capacity_frames = [
+        capacity[0].as_frames(),
+        capacity[1].as_frames(),
+        capacity[2].as_frames(),
+    ];
+    while capacity_frames[1] > 512 * 60 * 82 {
+        capacity_frames[0] /= 2;
+        capacity_frames[1] /= 2;
+        capacity_frames[2] /= 2;
+    }
+
     Ok(Disc {
         title,
         writable: (flags & DiscFlag::Writable as u8) != 0,
         write_protected: (flags & DiscFlag::WriteProtected as u8) != 0,
-        used_seconds: Some(capacity[0].as_duration().as_secs()),
-        left_seconds: Some(capacity[2].as_duration().as_secs()),
-        total_seconds: Some(capacity[1].as_duration().as_secs()),
+        used_seconds: Some(md_time_frames_to_seconds(capacity_frames[0])),
+        left_seconds: Some(md_time_frames_to_seconds(capacity_frames[2])),
+        total_seconds: Some(md_time_frames_to_seconds(capacity_frames[1])),
         track_count: track_count as usize,
         groups,
     })
 }
 
-async fn ensure_disc_writable(context: &mut NetMDContext) -> Result<(), DeviceError> {
-    let flags = context
-        .interface_mut()
+async fn ensure_upload_allowed(
+    context: &mut NetMDContext,
+    md_time_frames_needed: u64,
+) -> Result<(), DeviceError> {
+    let interface = context.interface_mut();
+    let flags = interface
         .disc_flags()
         .await
         .map_err(|err| DeviceError::ListContent(err.to_string()))?;
@@ -176,6 +205,24 @@ async fn ensure_disc_writable(context: &mut NetMDContext) -> Result<(), DeviceEr
         return Err(DeviceError::NotWritable);
     }
 
+    let capacity = interface
+        .disc_capacity()
+        .await
+        .map_err(|err| DeviceError::ListContent(err.to_string()))?;
+    let mut total_frames = capacity[1].as_frames();
+    let mut left_frames = capacity[2].as_frames();
+    while total_frames > 512 * 60 * 82 {
+        total_frames /= 2;
+        left_frames /= 2;
+    }
+
+    if md_time_frames_needed > left_frames {
+        return Err(DeviceError::InsufficientCapacity {
+            needed_seconds: md_time_frames_to_seconds(md_time_frames_needed),
+            left_seconds: md_time_frames_to_seconds(left_frames),
+        });
+    }
+
     Ok(())
 }
 
@@ -183,6 +230,7 @@ fn wire_format(format: RawUploadFormat) -> WireFormat {
     match format {
         RawUploadFormat::Sp => WireFormat::Pcm,
         RawUploadFormat::Lp2 => WireFormat::LP2,
+        RawUploadFormat::Lp105 => WireFormat::L105kbps,
         RawUploadFormat::Lp4 => WireFormat::LP4,
     }
 }

@@ -18,12 +18,12 @@ pub enum Command {
         json: bool,
     },
 
-    /// Convert an audio file with ffmpeg and upload it to the inserted disc.
+    /// Convert an MP3, FLAC, WAV, or other ffmpeg-supported audio file and upload it.
     Upload {
-        /// Source audio file supported by ffmpeg.
+        /// Source audio file supported by ffmpeg, such as MP3, FLAC, WAV, AAC, or Ogg Vorbis.
         path: PathBuf,
 
-        /// Target recording format. Only sp is converted in this iteration.
+        /// Target recording format. Converted uploads default to SP.
         #[arg(long, value_enum, default_value = "sp")]
         format: RawFormat,
 
@@ -37,13 +37,26 @@ pub enum Command {
         /// Prepared raw audio file.
         path: PathBuf,
 
-        /// Raw audio wire format: sp is big-endian 16-bit stereo PCM; lp2/lp4 are headerless ATRAC3 frames.
+        /// Raw audio wire format: sp is big-endian 16-bit stereo PCM; lp2/lp105/lp4 are headerless ATRAC3 frames.
         #[arg(long, value_enum)]
         format: RawFormat,
 
         /// Track title to write after transfer. Defaults to the input file name stem.
         #[arg(long)]
         title: Option<String>,
+    },
+
+    /// Convert an audio file into prepared raw bytes without writing a disc.
+    Convert {
+        /// Source audio file supported by ffmpeg, such as MP3, FLAC, WAV, AAC, or Ogg Vorbis.
+        input: PathBuf,
+
+        /// Output raw file to write.
+        output: PathBuf,
+
+        /// Target raw format.
+        #[arg(long, value_enum, default_value = "sp")]
+        format: RawFormat,
     },
 
     /// Show Linux USB permission diagnostics and udev setup guidance.
@@ -54,5 +67,6 @@ pub enum Command {
 pub enum RawFormat {
     Sp,
     Lp2,
+    Lp105,
     Lp4,
 }

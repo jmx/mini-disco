@@ -11,6 +11,16 @@ pub fn print_disc_human(snapshot: &DeviceSnapshot) {
         "Device: {}",
         empty_fallback(&snapshot.device_name, "Unknown NetMD device")
     );
+    println!(
+        "USB: {:04x}:{:04x}",
+        snapshot.vendor_id, snapshot.product_id
+    );
+    if let Some(recording_parameters) = &snapshot.recording_parameters {
+        println!(
+            "Recording parameters: {}",
+            format_hex_bytes(recording_parameters)
+        );
+    }
     print_disc_summary(&snapshot.disc);
 
     for group in &snapshot.disc.groups {
@@ -85,6 +95,14 @@ fn format_duration(seconds: u64) -> String {
     let minutes = seconds / 60;
     let seconds = seconds % 60;
     format!("{minutes}:{seconds:02}")
+}
+
+fn format_hex_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("0x{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn empty_fallback<'a>(value: &'a str, fallback: &'a str) -> &'a str {
