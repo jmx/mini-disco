@@ -154,7 +154,7 @@ impl NetMD {
         }
 
         let usb_device = usb_descriptor.open().await?;
-        let usb_interface = usb_device.open_interface(0).await?;
+        let usb_interface = usb_device.detach_and_open_interface(0).await?;
 
         Ok(Self {
             usb_interface,

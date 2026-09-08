@@ -759,6 +759,7 @@ dependencies = [
  "clap",
  "cross_usb",
  "minidisc",
+ "nusb",
  "serde",
  "serde_json",
  "tempfile",

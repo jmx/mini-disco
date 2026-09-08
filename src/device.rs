@@ -19,6 +19,19 @@ pub trait MinidiscDevice {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DeviceListing {
+    pub index: usize,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    pub serial_number: Option<String>,
+    pub usb_bus: Option<u8>,
+    pub usb_address: Option<u8>,
+    pub sysfs_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DeviceSnapshot {
     pub device_name: String,
     pub vendor_id: u16,
@@ -176,8 +189,14 @@ pub enum DeviceError {
     #[error("no supported NetMD device was found on USB")]
     NotFound,
 
-    #[error("multiple supported NetMD devices were found; unplug all but one device for now")]
-    MultipleDevices,
+    #[error("multiple supported NetMD devices were found ({count}); run `mini-disco devices` and retry with `--device NUMBER`")]
+    MultipleDevices { count: usize },
+
+    #[error("device number must be at least 1")]
+    DeviceIndexZero,
+
+    #[error("device {requested} does not exist; {count} supported NetMD device(s) were found")]
+    DeviceIndexOutOfRange { requested: usize, count: usize },
 
     #[error("could not open NetMD device: {0}")]
     Open(String),

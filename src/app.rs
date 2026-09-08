@@ -1,48 +1,60 @@
 use crate::audio;
 use crate::cli::{Cli, Command, RawFormat};
 use crate::device::{
-    MinidiscDevice, PlaybackCommand, PreparedUpload, RawUploadFormat, UploadRequest,
+    DeviceError, MinidiscDevice, PlaybackCommand, PreparedUpload, RawUploadFormat, UploadRequest,
 };
 use crate::m3u;
 use crate::netmd::NetMdDevice;
-use crate::output::{print_disc_human, print_disc_json};
+use crate::output::{print_devices_human, print_devices_json, print_disc_human, print_disc_json};
 use crate::udev;
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::process::ExitCode;
 
 pub async fn run(cli: Cli) -> Result<ExitCode> {
+    let device_index = cli.device;
     match cli.command {
-        Command::List { json } => list(json).await,
+        Command::Devices { json } => devices(json).await,
+        Command::List { json } => list(device_index, json).await,
         Command::Upload {
             path,
             format,
             title,
-        } => upload(path, format, title).await,
+        } => upload(device_index, path, format, title).await,
         Command::UploadM3u {
             path,
             format,
             erase_first,
             group,
-        } => upload_m3u(path, format, erase_first, group).await,
+        } => upload_m3u(device_index, path, format, erase_first, group).await,
         Command::UploadRaw {
             path,
             format,
             title,
-        } => upload_raw(path, format, title).await,
+        } => upload_raw(device_index, path, format, title).await,
         Command::Convert {
             input,
             output,
             format,
         } => convert(input, output, format),
-        Command::RenameDisc { title } => rename_disc(title).await,
-        Command::RenameTrack { track, title } => rename_track(track, title).await,
-        Command::DeleteTrack { track } => delete_track(track).await,
-        Command::Erase => erase_disc().await,
-        Command::Play => playback(PlaybackCommand::Play, "Started playback").await,
-        Command::Pause => playback(PlaybackCommand::Pause, "Paused playback").await,
-        Command::Stop => playback(PlaybackCommand::Stop, "Stopped playback").await,
-        Command::Next => playback(PlaybackCommand::Next, "Skipped to next track").await,
-        Command::Prev => playback(PlaybackCommand::Previous, "Skipped to previous track").await,
+        Command::RenameDisc { title } => rename_disc(device_index, title).await,
+        Command::RenameTrack { track, title } => rename_track(device_index, track, title).await,
+        Command::DeleteTrack { track } => delete_track(device_index, track).await,
+        Command::Erase => erase_disc(device_index).await,
+        Command::Play => playback(device_index, PlaybackCommand::Play, "Started playback").await,
+        Command::Pause => playback(device_index, PlaybackCommand::Pause, "Paused playback").await,
+        Command::Stop => playback(device_index, PlaybackCommand::Stop, "Stopped playback").await,
+        Command::Next => {
+            playback(device_index, PlaybackCommand::Next, "Skipped to next track").await
+        }
+        Command::Prev => {
+            playback(
+                device_index,
+                PlaybackCommand::Previous,
+                "Skipped to previous track",
+            )
+            .await
+        }
         Command::Doctor => {
             udev::print_doctor();
             Ok(ExitCode::SUCCESS)
@@ -50,17 +62,21 @@ pub async fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
-async fn list(json: bool) -> Result<ExitCode> {
-    let mut device = match NetMdDevice::connect_first().await {
-        Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
-    };
+async fn devices(json: bool) -> Result<ExitCode> {
+    let devices = NetMdDevice::list_devices().await?;
+    if json {
+        print_devices_json(&devices)?;
+    } else {
+        print_devices_human(&devices);
+    }
+    Ok(ExitCode::SUCCESS)
+}
 
+async fn list(device_index: Option<usize>, json: bool) -> Result<ExitCode> {
+    let mut device = match connect_device(device_index).await {
+        Ok(device) => device,
+        Err(code) => return Ok(code),
+    };
     let snapshot = device.snapshot().await?;
     if json {
         print_disc_json(&snapshot)?;
@@ -71,12 +87,20 @@ async fn list(json: bool) -> Result<ExitCode> {
 }
 
 async fn upload(
+    device_index: Option<usize>,
     path: std::path::PathBuf,
     format: RawFormat,
     title: Option<String>,
 ) -> Result<ExitCode> {
     let title = title.unwrap_or_else(|| fallback_title(&path));
-    let request = match audio::prepare_upload(&path, raw_upload_format(format), title) {
+    let mut progress = EncodingProgressPrinter::new(format!("Encoding `{}`", path.display()));
+    let mut report = |event| progress.report(event);
+    let request_result =
+        audio::prepare_upload_with_progress(&path, raw_upload_format(format), title, &mut report);
+    drop(report);
+    progress.finish();
+
+    let request = match request_result {
         Ok(request) => request,
         Err(err) => {
             eprintln!("{err}");
@@ -84,10 +108,11 @@ async fn upload(
         }
     };
 
-    upload_request(request).await
+    upload_request(device_index, request).await
 }
 
 async fn upload_m3u(
+    device_index: Option<usize>,
     path: std::path::PathBuf,
     format: RawFormat,
     erase_first: bool,
@@ -106,12 +131,29 @@ async fn upload_m3u(
         .unwrap_or_else(|| fallback_title(&path));
 
     let mut prepared_uploads = Vec::new();
+    let track_total = playlist.tracks.len();
     for (index, track) in playlist.tracks.iter().enumerate() {
         let title = track
             .title
             .clone()
             .unwrap_or_else(|| fallback_title(&track.path));
-        let request = match audio::prepare_upload(&track.path, raw_upload_format(format), title) {
+        let mut progress = EncodingProgressPrinter::new(format!(
+            "Encoding track {}/{} `{}`",
+            index + 1,
+            track_total,
+            track.path.display()
+        ));
+        let mut report = |event| progress.report(event);
+        let request_result = audio::prepare_upload_with_progress(
+            &track.path,
+            raw_upload_format(format),
+            title,
+            &mut report,
+        );
+        drop(report);
+        progress.finish();
+
+        let request = match request_result {
             Ok(request) => request,
             Err(err) => {
                 eprintln!(
@@ -142,14 +184,9 @@ async fn upload_m3u(
         if prepared_uploads.len() == 1 { "" } else { "s" }
     );
 
-    let mut device = match NetMdDevice::connect_first().await {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     if erase_first {
@@ -230,7 +267,14 @@ fn convert(
     output: std::path::PathBuf,
     format: RawFormat,
 ) -> Result<ExitCode> {
-    let data = match audio::convert_to_raw(&input, raw_upload_format(format)) {
+    let mut progress = EncodingProgressPrinter::new(format!("Encoding `{}`", input.display()));
+    let mut report = |event| progress.report(event);
+    let data_result =
+        audio::convert_to_raw_with_progress(&input, raw_upload_format(format), &mut report);
+    drop(report);
+    progress.finish();
+
+    let data = match data_result {
         Ok(data) => data,
         Err(err) => {
             eprintln!("{err}");
@@ -261,6 +305,7 @@ fn convert(
 }
 
 async fn upload_raw(
+    device_index: Option<usize>,
     path: std::path::PathBuf,
     format: RawFormat,
     title: Option<String>,
@@ -274,18 +319,13 @@ async fn upload_raw(
         data,
     };
 
-    upload_request(request).await
+    upload_request(device_index, request).await
 }
 
-async fn rename_disc(title: String) -> Result<ExitCode> {
-    let mut device = match NetMdDevice::connect_first().await {
+async fn rename_disc(device_index: Option<usize>, title: String) -> Result<ExitCode> {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     match device.rename_disc(title).await {
@@ -305,7 +345,11 @@ async fn rename_disc(title: String) -> Result<ExitCode> {
     }
 }
 
-async fn rename_track(track_number: u16, title: String) -> Result<ExitCode> {
+async fn rename_track(
+    device_index: Option<usize>,
+    track_number: u16,
+    title: String,
+) -> Result<ExitCode> {
     let track_index = match track_number_to_index(track_number) {
         Ok(track_index) => track_index,
         Err(err) => {
@@ -314,14 +358,9 @@ async fn rename_track(track_number: u16, title: String) -> Result<ExitCode> {
         }
     };
 
-    let mut device = match NetMdDevice::connect_first().await {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     match device.rename_track(track_index, title).await {
@@ -341,7 +380,7 @@ async fn rename_track(track_number: u16, title: String) -> Result<ExitCode> {
     }
 }
 
-async fn delete_track(track_number: u16) -> Result<ExitCode> {
+async fn delete_track(device_index: Option<usize>, track_number: u16) -> Result<ExitCode> {
     let track_index = match track_number_to_index(track_number) {
         Ok(track_index) => track_index,
         Err(err) => {
@@ -350,14 +389,9 @@ async fn delete_track(track_number: u16) -> Result<ExitCode> {
         }
     };
 
-    let mut device = match NetMdDevice::connect_first().await {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     match device.delete_track(track_index).await {
@@ -377,15 +411,10 @@ async fn delete_track(track_number: u16) -> Result<ExitCode> {
     }
 }
 
-async fn erase_disc() -> Result<ExitCode> {
-    let mut device = match NetMdDevice::connect_first().await {
+async fn erase_disc(device_index: Option<usize>) -> Result<ExitCode> {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     match device.erase_disc().await {
@@ -405,15 +434,14 @@ async fn erase_disc() -> Result<ExitCode> {
     }
 }
 
-async fn playback(command: PlaybackCommand, success_message: &str) -> Result<ExitCode> {
-    let mut device = match NetMdDevice::connect_first().await {
+async fn playback(
+    device_index: Option<usize>,
+    command: PlaybackCommand,
+    success_message: &str,
+) -> Result<ExitCode> {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     match device.playback(command).await {
@@ -428,7 +456,7 @@ async fn playback(command: PlaybackCommand, success_message: &str) -> Result<Exi
     }
 }
 
-async fn upload_request(request: UploadRequest) -> Result<ExitCode> {
+async fn upload_request(device_index: Option<usize>, request: UploadRequest) -> Result<ExitCode> {
     let request = match request.prepare() {
         Ok(request) => request,
         Err(err) => {
@@ -440,14 +468,9 @@ async fn upload_request(request: UploadRequest) -> Result<ExitCode> {
     print_upload_summary(&request);
     let upload_format = request.format;
 
-    let mut device = match NetMdDevice::connect_first().await {
+    let mut device = match connect_device(device_index).await {
         Ok(device) => device,
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!();
-            udev::print_doctor_to_stderr();
-            return Ok(ExitCode::FAILURE);
-        }
+        Err(code) => return Ok(code),
     };
 
     match device.upload_raw(request).await {
@@ -464,6 +487,53 @@ async fn upload_request(request: UploadRequest) -> Result<ExitCode> {
             eprintln!("{err}");
             print_upload_failure_hint(upload_format, &err);
             Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn connect_device(device_index: Option<usize>) -> Result<NetMdDevice, ExitCode> {
+    match NetMdDevice::connect(device_index).await {
+        Ok(device) => Ok(device),
+        Err(err) => {
+            eprintln!("{err}");
+            if matches!(err, DeviceError::NotFound | DeviceError::Open(_)) {
+                eprintln!();
+                udev::print_doctor_to_stderr();
+            }
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+struct EncodingProgressPrinter {
+    prefix: String,
+    last_len: usize,
+}
+
+impl EncodingProgressPrinter {
+    fn new(prefix: String) -> Self {
+        Self {
+            prefix,
+            last_len: 0,
+        }
+    }
+
+    fn report(&mut self, progress: audio::EncodingProgress) {
+        let value = match progress.percent {
+            Some(percent) => format!("{percent}%"),
+            None => "running".to_string(),
+        };
+        let line = format!("{} with {}: {}", self.prefix, progress.encoder, value);
+        let padding = self.last_len.saturating_sub(line.len());
+        eprint!("\r{line}{}", " ".repeat(padding));
+        let _ = std::io::stderr().flush();
+        self.last_len = line.len();
+    }
+
+    fn finish(&mut self) {
+        if self.last_len > 0 {
+            eprintln!();
+            self.last_len = 0;
         }
     }
 }

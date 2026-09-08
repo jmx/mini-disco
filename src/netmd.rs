@@ -1,9 +1,12 @@
 use crate::device::{
-    md_time_frames_to_seconds, DeviceError, DeviceSnapshot, Disc, Group, MinidiscDevice,
-    PlaybackCommand, PreparedUpload, RawUploadFormat, Track, UploadResult,
+    md_time_frames_to_seconds, DeviceError, DeviceListing, DeviceSnapshot, Disc, Group,
+    MinidiscDevice, PlaybackCommand, PreparedUpload, RawUploadFormat, Track, UploadResult,
 };
 use async_trait::async_trait;
 use cross_usb::get_device_list;
+use cross_usb::prelude::UsbDeviceInfo;
+use cross_usb::usb::Error as UsbError;
+use cross_usb::DeviceInfo;
 use minidisc::netmd::base::DEVICE_IDS_CROSSUSB;
 use minidisc::netmd::interface::{DiscFlag, MDTrack, WireFormat};
 use minidisc::netmd::NetMDContext;
@@ -13,24 +16,128 @@ pub struct NetMdDevice {
 }
 
 impl NetMdDevice {
-    pub async fn connect_first() -> Result<Self, DeviceError> {
-        let descriptors: Vec<_> = get_device_list(DEVICE_IDS_CROSSUSB.to_vec())
-            .await
-            .map_err(|err| map_open_error(err.to_string()))?
-            .collect();
+    pub async fn list_devices() -> Result<Vec<DeviceListing>, DeviceError> {
+        let descriptors = supported_device_descriptors().await?;
+        let locations = supported_device_locations();
+        let mut devices = Vec::with_capacity(descriptors.len());
 
-        let descriptor = match descriptors.len() {
-            0 => return Err(DeviceError::NotFound),
-            1 => descriptors.into_iter().next().expect("length checked"),
-            _ => return Err(DeviceError::MultipleDevices),
-        };
+        for (position, descriptor) in descriptors.iter().enumerate() {
+            let location = locations.get(position);
+            devices.push(DeviceListing {
+                index: position + 1,
+                vendor_id: descriptor.vendor_id().await,
+                product_id: descriptor.product_id().await,
+                manufacturer: descriptor.manufacturer_string().await,
+                product: descriptor.product_string().await,
+                serial_number: location.and_then(|location| location.serial_number.clone()),
+                usb_bus: location.map(|location| location.bus_number),
+                usb_address: location.map(|location| location.device_address),
+                sysfs_path: location.and_then(|location| location.sysfs_path.clone()),
+            });
+        }
 
+        Ok(devices)
+    }
+
+    pub async fn connect(device_index: Option<usize>) -> Result<Self, DeviceError> {
+        let mut descriptors = supported_device_descriptors().await?;
+        let index = select_device_index(device_index, descriptors.len())?;
+        let descriptor = descriptors.swap_remove(index);
         let context = NetMDContext::new(descriptor)
             .await
             .map_err(|err| DeviceError::Open(err.to_string()))?;
 
         Ok(Self { context })
     }
+}
+
+async fn supported_device_descriptors() -> Result<Vec<DeviceInfo>, DeviceError> {
+    match get_device_list(DEVICE_IDS_CROSSUSB.to_vec()).await {
+        Ok(devices) => Ok(devices.collect()),
+        Err(UsbError::DeviceNotFound) => Ok(Vec::new()),
+        Err(err) => Err(map_open_error(err.to_string())),
+    }
+}
+
+fn select_device_index(
+    device_index: Option<usize>,
+    device_count: usize,
+) -> Result<usize, DeviceError> {
+    if device_index == Some(0) {
+        return Err(DeviceError::DeviceIndexZero);
+    }
+
+    if device_count == 0 {
+        return Err(DeviceError::NotFound);
+    }
+
+    match device_index {
+        Some(requested) if requested > device_count => Err(DeviceError::DeviceIndexOutOfRange {
+            requested,
+            count: device_count,
+        }),
+        Some(requested) => Ok(requested - 1),
+        None if device_count == 1 => Ok(0),
+        None => Err(DeviceError::MultipleDevices {
+            count: device_count,
+        }),
+    }
+}
+
+#[derive(Debug)]
+struct DeviceLocation {
+    bus_number: u8,
+    device_address: u8,
+    serial_number: Option<String>,
+    sysfs_path: Option<String>,
+}
+
+fn supported_device_locations() -> Vec<DeviceLocation> {
+    nusb::list_devices()
+        .map(|devices| {
+            devices
+                .filter(matches_supported_filter)
+                .map(|device| DeviceLocation {
+                    bus_number: device.bus_number(),
+                    device_address: device.device_address(),
+                    serial_number: device.serial_number().map(str::to_string),
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
+                    sysfs_path: Some(device.sysfs_path().display().to_string()),
+                    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                    sysfs_path: None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn matches_supported_filter(device: &nusb::DeviceInfo) -> bool {
+    DEVICE_IDS_CROSSUSB.iter().any(|filter| {
+        // Keep this in lockstep with cross_usb::get_device_list so display indices match opens.
+        let mut matches = false;
+
+        if let Some(vendor_id) = filter.vendor_id {
+            matches = vendor_id == device.vendor_id();
+        }
+
+        if let Some(product_id) = filter.product_id {
+            matches = product_id == device.product_id();
+        }
+
+        if let Some(class) = filter.class {
+            matches = class == device.class();
+        }
+
+        if let Some(subclass) = filter.subclass {
+            matches = subclass == device.subclass();
+        }
+
+        if let Some(protocol) = filter.protocol {
+            matches = protocol == device.protocol();
+        }
+
+        matches
+    })
 }
 
 #[async_trait]
@@ -528,8 +635,42 @@ fn blank_to_none(value: String) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compile_group_titles, group_range};
-    use crate::device::{Disc, Group, Track};
+    use super::{compile_group_titles, group_range, select_device_index};
+    use crate::device::{DeviceError, Disc, Group, Track};
+
+    #[test]
+    fn selects_only_device_without_an_explicit_index() {
+        assert_eq!(select_device_index(None, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn requires_explicit_index_when_multiple_devices_match() {
+        assert!(matches!(
+            select_device_index(None, 2).unwrap_err(),
+            DeviceError::MultipleDevices { count: 2 }
+        ));
+    }
+
+    #[test]
+    fn converts_display_device_number_to_zero_based_index() {
+        assert_eq!(select_device_index(Some(1), 2).unwrap(), 0);
+        assert_eq!(select_device_index(Some(2), 2).unwrap(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_device_number() {
+        assert!(matches!(
+            select_device_index(Some(0), 2).unwrap_err(),
+            DeviceError::DeviceIndexZero
+        ));
+        assert!(matches!(
+            select_device_index(Some(3), 2).unwrap_err(),
+            DeviceError::DeviceIndexOutOfRange {
+                requested: 3,
+                count: 2
+            }
+        ));
+    }
 
     #[test]
     fn group_range_uses_single_track_without_dash() {

@@ -5,12 +5,23 @@ use std::path::PathBuf;
 #[command(name = "mini-disco")]
 #[command(about = "Work with NetMD MiniDisc devices from a Linux terminal")]
 pub struct Cli {
+    /// Use the Nth supported NetMD device shown by `devices`.
+    #[arg(long, global = true, value_name = "NUMBER")]
+    pub device: Option<usize>,
+
     #[command(subcommand)]
     pub command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// List supported NetMD devices without opening a disc.
+    Devices {
+        /// Print machine-readable JSON instead of a human table.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Connect to one NetMD device and list the inserted disc contents.
     List {
         /// Print machine-readable JSON instead of a human table.

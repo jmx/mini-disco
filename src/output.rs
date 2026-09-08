@@ -1,5 +1,37 @@
-use crate::device::{DeviceSnapshot, Disc, Group, Track};
+use crate::device::{DeviceListing, DeviceSnapshot, Disc, Group, Track};
 use anyhow::Result;
+
+pub fn print_devices_json(devices: &[DeviceListing]) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(devices)?);
+    Ok(())
+}
+
+pub fn print_devices_human(devices: &[DeviceListing]) {
+    if devices.is_empty() {
+        println!("No supported NetMD devices found");
+        return;
+    }
+
+    println!(
+        "{:>3}  {:<9}  {:<7}  {:<7}  {:<24}  {}",
+        "#", "USB", "Vendor", "Product", "Manufacturer", "Name"
+    );
+    for device in devices {
+        let usb = match (device.usb_bus, device.usb_address) {
+            (Some(bus), Some(address)) => format!("{bus:03}:{address:03}"),
+            _ => "-".to_string(),
+        };
+        println!(
+            "{:>3}  {:<9}  {:04x}     {:04x}     {:<24}  {}",
+            device.index,
+            usb,
+            device.vendor_id,
+            device.product_id,
+            device.manufacturer.as_deref().unwrap_or("-"),
+            device.product.as_deref().unwrap_or("-")
+        );
+    }
+}
 
 pub fn print_disc_json(snapshot: &DeviceSnapshot) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(snapshot)?);

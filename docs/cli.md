@@ -5,7 +5,10 @@ Mini Disco currently exposes a narrow Linux USB NetMD slice.
 ## Commands
 
 ```sh
+cargo run -- devices
+cargo run -- devices --json
 cargo run -- list
+cargo run -- --device 2 list
 cargo run -- list --json
 cargo run -- upload song.wav --title "Track Title"
 cargo run -- upload song.wav --format sp --title "Track Title"
@@ -29,9 +32,11 @@ cargo run -- prev
 cargo run -- doctor
 ```
 
-`list` opens exactly one supported NetMD device, reads the inserted disc, and prints the device name, disc title, track count, capacity, groups, and tracks. If more than one supported NetMD device is attached, unplug all but one device for this first iteration.
+`devices` lists every supported NetMD USB match without opening the disc. Device numbers are 1-based and are the values accepted by the global `--device NUMBER` option.
 
-`upload` converts any source audio file your installed `ffmpeg` can decode, including MP3, FLAC, WAV, AAC, and Ogg Vorbis, then writes it to the inserted disc. Converted uploads default to SP. SP uses `ffmpeg` to create 44.1 kHz stereo big-endian PCM for the normal NetMD PCM transfer path. LP2, LP105, and LP4 conversion require an `atracdenc` executable in `PATH`; Mini Disco uses `ffmpeg` to create a 44.1 kHz stereo 16-bit WAV, runs `atracdenc`, strips the 96-byte OMA header, checks remaining disc capacity before transfer, and prints the refreshed disc contents after a successful upload.
+`list` opens one supported NetMD device, reads the inserted disc, and prints the device name, disc title, track count, capacity, groups, and tracks. If exactly one supported device is attached, Mini Disco selects it automatically. If multiple supported devices are attached, run `devices`, then pass `--device NUMBER` to `list`, `upload`, `upload-m3u`, `upload-raw`, `rename-disc`, `rename-track`, `delete-track`, `erase`, `play`, `pause`, `stop`, `next`, or `prev`.
+
+`upload` converts any source audio file your installed `ffmpeg` can decode, including MP3, FLAC, WAV, AAC, and Ogg Vorbis, then writes it to the inserted disc. Converted uploads default to SP. SP uses `ffmpeg` to create 44.1 kHz stereo big-endian PCM for the normal NetMD PCM transfer path. LP2, LP105, and LP4 conversion require an `atracdenc` executable in `PATH`; Mini Disco uses `ffmpeg` to create a 44.1 kHz stereo 16-bit WAV, runs `atracdenc`, strips the 96-byte OMA header, checks remaining disc capacity before transfer, and prints the refreshed disc contents after a successful upload. Converted uploads print encoder progress before the NetMD upload stage begins.
 
 Importing existing ATRAC1/AEA SP files still needs Web MiniDisc's factory/exploit path and is not implemented yet. The current SP upload path is converted PCM.
 
