@@ -32,6 +32,24 @@ pub enum Command {
         title: Option<String>,
     },
 
+    /// Convert and upload every local audio file referenced by an M3U playlist.
+    UploadM3u {
+        /// M3U or M3U8 playlist file.
+        path: PathBuf,
+
+        /// Target recording format. Converted uploads default to SP.
+        #[arg(long, value_enum, default_value = "sp")]
+        format: RawFormat,
+
+        /// Erase the inserted disc before writing playlist tracks.
+        #[arg(long)]
+        erase_first: bool,
+
+        /// Keep the current disc title and write playlist tracks under a new group.
+        #[arg(long)]
+        group: bool,
+    },
+
     /// Upload prepared raw audio bytes to the inserted disc.
     UploadRaw {
         /// Prepared raw audio file.
@@ -79,6 +97,9 @@ pub enum Command {
         /// Track number as shown by `list`.
         track: u16,
     },
+
+    /// Erase every track and title from the inserted disc.
+    Erase,
 
     /// Start or resume playback on the attached NetMD device.
     Play,

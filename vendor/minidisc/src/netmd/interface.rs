@@ -1015,6 +1015,7 @@ impl NetMDInterface {
                 track_minmax = track_range.split('-').collect();
             } else {
                 track_minmax.push(track_range.as_str());
+                track_minmax.push(track_range.as_str());
             }
 
             let (track_min, mut track_max) = (

@@ -2,6 +2,7 @@ mod app;
 mod audio;
 mod cli;
 mod device;
+mod m3u;
 mod netmd;
 mod output;
 mod udev;

@@ -8,6 +8,13 @@ pub trait MinidiscDevice {
     async fn rename_disc(&mut self, title: String) -> Result<(), DeviceError>;
     async fn rename_track(&mut self, track_index: u16, title: String) -> Result<(), DeviceError>;
     async fn delete_track(&mut self, track_index: u16) -> Result<(), DeviceError>;
+    async fn erase_disc(&mut self) -> Result<(), DeviceError>;
+    async fn add_group(
+        &mut self,
+        start_track_index: u16,
+        track_count: u16,
+        title: String,
+    ) -> Result<(), DeviceError>;
     async fn playback(&mut self, command: PlaybackCommand) -> Result<(), DeviceError>;
 }
 
@@ -23,6 +30,7 @@ pub struct DeviceSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct Disc {
     pub title: String,
+    pub full_width_title: String,
     pub writable: bool,
     pub write_protected: bool,
     pub used_seconds: Option<u64>,
@@ -36,6 +44,7 @@ pub struct Disc {
 pub struct Group {
     pub index: i32,
     pub title: Option<String>,
+    pub full_width_title: Option<String>,
     pub tracks: Vec<Track>,
 }
 
@@ -205,6 +214,15 @@ pub enum DeviceError {
 
     #[error("could not delete track: {0}")]
     DeleteTrack(String),
+
+    #[error("could not erase disc: {0}")]
+    EraseDisc(String),
+
+    #[error("group must contain at least one track")]
+    EmptyGroup,
+
+    #[error("could not create group: {0}")]
+    CreateGroup(String),
 
     #[error("could not control playback: {0}")]
     Playback(String),

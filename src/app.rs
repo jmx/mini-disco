@@ -3,6 +3,7 @@ use crate::cli::{Cli, Command, RawFormat};
 use crate::device::{
     MinidiscDevice, PlaybackCommand, PreparedUpload, RawUploadFormat, UploadRequest,
 };
+use crate::m3u;
 use crate::netmd::NetMdDevice;
 use crate::output::{print_disc_human, print_disc_json};
 use crate::udev;
@@ -17,6 +18,12 @@ pub async fn run(cli: Cli) -> Result<ExitCode> {
             format,
             title,
         } => upload(path, format, title).await,
+        Command::UploadM3u {
+            path,
+            format,
+            erase_first,
+            group,
+        } => upload_m3u(path, format, erase_first, group).await,
         Command::UploadRaw {
             path,
             format,
@@ -30,6 +37,7 @@ pub async fn run(cli: Cli) -> Result<ExitCode> {
         Command::RenameDisc { title } => rename_disc(title).await,
         Command::RenameTrack { track, title } => rename_track(track, title).await,
         Command::DeleteTrack { track } => delete_track(track).await,
+        Command::Erase => erase_disc().await,
         Command::Play => playback(PlaybackCommand::Play, "Started playback").await,
         Command::Pause => playback(PlaybackCommand::Pause, "Paused playback").await,
         Command::Stop => playback(PlaybackCommand::Stop, "Stopped playback").await,
@@ -77,6 +85,144 @@ async fn upload(
     };
 
     upload_request(request).await
+}
+
+async fn upload_m3u(
+    path: std::path::PathBuf,
+    format: RawFormat,
+    erase_first: bool,
+    group: bool,
+) -> Result<ExitCode> {
+    let playlist = match m3u::read_playlist(&path) {
+        Ok(playlist) => playlist,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    let playlist_title = playlist
+        .title
+        .clone()
+        .unwrap_or_else(|| fallback_title(&path));
+
+    let mut prepared_uploads = Vec::new();
+    for (index, track) in playlist.tracks.iter().enumerate() {
+        let title = track
+            .title
+            .clone()
+            .unwrap_or_else(|| fallback_title(&track.path));
+        let request = match audio::prepare_upload(&track.path, raw_upload_format(format), title) {
+            Ok(request) => request,
+            Err(err) => {
+                eprintln!(
+                    "Could not prepare playlist track {} (`{}`): {err}",
+                    index + 1,
+                    track.path.display()
+                );
+                return Ok(ExitCode::FAILURE);
+            }
+        };
+        let request = match request.prepare() {
+            Ok(request) => request,
+            Err(err) => {
+                eprintln!(
+                    "Could not prepare playlist track {} (`{}`): {err}",
+                    index + 1,
+                    track.path.display()
+                );
+                return Ok(ExitCode::FAILURE);
+            }
+        };
+        prepared_uploads.push(request);
+    }
+
+    eprintln!(
+        "Prepared M3U upload: {} track{}",
+        prepared_uploads.len(),
+        if prepared_uploads.len() == 1 { "" } else { "s" }
+    );
+
+    let mut device = match NetMdDevice::connect_first().await {
+        Ok(device) => device,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            udev::print_doctor_to_stderr();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    if erase_first {
+        match device.erase_disc().await {
+            Ok(()) => println!("Erased disc"),
+            Err(err) => {
+                eprintln!("{err}");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+
+    if !group {
+        match device.rename_disc(playlist_title.clone()).await {
+            Ok(()) => println!("Renamed disc"),
+            Err(err) => {
+                eprintln!("{err}");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+
+    let track_count = match u16::try_from(prepared_uploads.len()) {
+        Ok(track_count) => track_count,
+        Err(_) => {
+            eprintln!("M3U playlist contains too many tracks for one MiniDisc group");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    let mut first_uploaded_track = None;
+    for request in prepared_uploads {
+        print_upload_summary(&request);
+        let upload_format = request.format;
+        match device.upload_raw(request).await {
+            Ok(result) => {
+                if first_uploaded_track.is_none() {
+                    first_uploaded_track = Some(result.track_index);
+                }
+                println!("Uploaded track {}", result.track_index + 1);
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                print_upload_failure_hint(upload_format, &err);
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+
+    if group {
+        let Some(start_track_index) = first_uploaded_track else {
+            eprintln!("M3U playlist does not contain any tracks to group");
+            return Ok(ExitCode::FAILURE);
+        };
+        match device
+            .add_group(start_track_index, track_count, playlist_title.clone())
+            .await
+        {
+            Ok(()) => println!("Created group `{playlist_title}`"),
+            Err(err) => {
+                eprintln!("{err}");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+
+    println!();
+    match device.snapshot().await {
+        Ok(snapshot) => print_disc_human(&snapshot),
+        Err(err) => eprintln!("Uploaded, but could not refresh disc contents: {err}"),
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn convert(
@@ -221,6 +367,34 @@ async fn delete_track(track_number: u16) -> Result<ExitCode> {
             match device.snapshot().await {
                 Ok(snapshot) => print_disc_human(&snapshot),
                 Err(err) => eprintln!("Deleted, but could not refresh disc contents: {err}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn erase_disc() -> Result<ExitCode> {
+    let mut device = match NetMdDevice::connect_first().await {
+        Ok(device) => device,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!();
+            udev::print_doctor_to_stderr();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    match device.erase_disc().await {
+        Ok(()) => {
+            println!("Erased disc");
+            println!();
+            match device.snapshot().await {
+                Ok(snapshot) => print_disc_human(&snapshot),
+                Err(err) => eprintln!("Erased, but could not refresh disc contents: {err}"),
             }
             Ok(ExitCode::SUCCESS)
         }
