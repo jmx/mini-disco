@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Mini Disco logo">
+</p>
+
 # Mini Disco
 
 Mini Disco is a standalone, Linux-first command-line tool for working with USB
