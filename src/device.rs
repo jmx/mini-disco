@@ -15,6 +15,7 @@ pub trait MinidiscDevice {
         track_count: u16,
         title: String,
     ) -> Result<(), DeviceError>;
+    async fn eject_disc(&mut self) -> Result<(), DeviceError>;
     async fn playback(&mut self, command: PlaybackCommand) -> Result<(), DeviceError>;
 }
 
@@ -236,6 +237,9 @@ pub enum DeviceError {
 
     #[error("could not erase disc: {0}")]
     EraseDisc(String),
+
+    #[error("could not eject disc: {0}")]
+    EjectDisc(String),
 
     #[error("group must contain at least one track")]
     EmptyGroup,

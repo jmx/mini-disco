@@ -41,6 +41,7 @@ pub async fn run(cli: Cli) -> Result<ExitCode> {
         Command::RenameTrack { track, title } => rename_track(device_index, track, title).await,
         Command::DeleteTrack { track } => delete_track(device_index, track).await,
         Command::Erase => erase_disc(device_index).await,
+        Command::Eject => eject_disc(device_index).await,
         Command::Play => playback(device_index, PlaybackCommand::Play, "Started playback").await,
         Command::Pause => playback(device_index, PlaybackCommand::Pause, "Paused playback").await,
         Command::Stop => playback(device_index, PlaybackCommand::Stop, "Stopped playback").await,
@@ -425,6 +426,24 @@ async fn erase_disc(device_index: Option<usize>) -> Result<ExitCode> {
                 Ok(snapshot) => print_disc_human(&snapshot),
                 Err(err) => eprintln!("Erased, but could not refresh disc contents: {err}"),
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn eject_disc(device_index: Option<usize>) -> Result<ExitCode> {
+    let mut device = match connect_device(device_index).await {
+        Ok(device) => device,
+        Err(code) => return Ok(code),
+    };
+
+    match device.eject_disc().await {
+        Ok(()) => {
+            println!("Ejected disc");
             Ok(ExitCode::SUCCESS)
         }
         Err(err) => {

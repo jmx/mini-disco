@@ -280,6 +280,14 @@ impl MinidiscDevice for NetMdDevice {
             .map_err(|err| DeviceError::CreateGroup(err.to_string()))
     }
 
+    async fn eject_disc(&mut self) -> Result<(), DeviceError> {
+        self.context
+            .interface_mut()
+            .eject_disc()
+            .await
+            .map_err(|err| DeviceError::EjectDisc(err.to_string()))
+    }
+
     async fn playback(&mut self, command: PlaybackCommand) -> Result<(), DeviceError> {
         match command {
             PlaybackCommand::Play => self.context.interface_mut().play().await,

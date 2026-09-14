@@ -112,6 +112,9 @@ pub enum Command {
     /// Erase every track and title from the inserted disc.
     Erase,
 
+    /// Eject the inserted disc from the attached NetMD device.
+    Eject,
+
     /// Start or resume playback on the attached NetMD device.
     Play,
 

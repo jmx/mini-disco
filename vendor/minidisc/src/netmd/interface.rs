@@ -2001,10 +2001,12 @@ impl<'a> MDSession<'a> {
     }
 
     pub async fn close(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.hex_session_key.is_none() {
-            self.md.session_key_forget().await?;
+        if self.hex_session_key.is_some() {
+            let _ = self.md.session_key_forget().await;
+            self.hex_session_key = None;
         }
-        self.hex_session_key = None;
+
+        self.md.leave_secure_session().await?;
 
         Ok(())
     }

@@ -596,22 +596,34 @@ impl NetMDContext {
             .map_err(|err| context_error("prepare download failed", err))?;
         // Lock the interface by providing it to the session
         let mut session = MDSession::new(&mut self.interface);
-        session
+        let init_result = session
             .init()
             .await
-            .map_err(|err| context_error("initialize secure session failed", err))?;
-        let result = session
+            .map_err(|err| context_error("initialize secure session failed", err));
+        if let Err(err) = init_result {
+            let _ = session.close().await;
+            drop(session);
+            let _ = self.interface.release().await;
+            return Err(err.into());
+        }
+
+        let download_result = session
             .download_track(track, progress_callback, None)
             .await
-            .map_err(|err| context_error("download track failed", err))?;
-        session
+            .map_err(|err| context_error("download track failed", err));
+        let close_result = session
             .close()
             .await
-            .map_err(|err| context_error("close secure session failed", err))?;
-        self.interface
+            .map_err(|err| context_error("close secure session failed", err));
+        drop(session);
+        let release_result = self.interface
             .release()
             .await
-            .map_err(|err| context_error("release device failed", err))?;
+            .map_err(|err| context_error("release device failed", err));
+
+        let result = download_result?;
+        close_result?;
+        release_result?;
 
         Ok(result)
     }
