@@ -1,68 +1,82 @@
 # Mini Disco
 
-Mini Disco is a Linux-first command-line tool for working with USB NetMD MiniDisc devices. It is a small Rust companion to the Web MiniDisc Pro code in this repository: the web app remains the broad, browser-based experience, while Mini Disco focuses on fast local terminal workflows for listing discs, editing titles, uploading audio, and controlling playback.
+Mini Disco is a standalone, Linux-first command-line tool for working with USB
+NetMD MiniDisc devices. It can inspect an inserted disc, edit disc and track
+metadata, upload converted audio or prepared raw audio, upload M3U playlists,
+erase or delete tracks, eject the disc, and send basic playback commands.
 
-The Rust tool lives in [`mini-disco/`](mini-disco/). The upstream-style web app lives in [`webminidisc/`](webminidisc/).
+The project is based on the NetMD behavior and hard-won device knowledge in
+[Web MiniDisc](https://github.com/asivery/webminidisc), but it is not a fork of
+that application. Mini Disco is its own Rust codebase with a terminal workflow,
+and it vendors the Rust `minidisc` crate while upload behavior is being proven
+against real hardware.
 
-## What It Can Do
+## Current Scope
 
-- Find supported NetMD devices connected over USB.
-- List the inserted disc title, groups, tracks, recording details, and remaining time.
-- Upload individual audio files after conversion through `ffmpeg`.
-- Upload M3U/M3U8 playlists in order, optionally erasing the disc first or creating a group.
+Mini Disco currently targets Linux USB NetMD devices. It is focused on local
+terminal workflows rather than browser support, remote devices, Hi-MD, factory
+mode tools, or full Web MiniDisc feature parity.
+
+It can:
+
+- List supported NetMD devices connected over USB.
+- Read disc title, groups, tracks, recording details, and remaining time.
+- Print JSON for device and disc listings.
+- Upload audio files after conversion through `ffmpeg`.
+- Upload M3U/M3U8 playlists in order.
+- Optionally erase the disc before a playlist upload.
+- Optionally create a group around uploaded playlist tracks.
 - Upload prepared raw SP, LP2, LP105, or LP4 audio bytes.
+- Convert supported audio files into raw upload bytes without touching a disc.
 - Rename discs and tracks.
-- Delete tracks or erase the whole disc.
+- Delete one track or erase the whole disc.
 - Eject the disc when the device supports software eject.
 - Control playback with play, pause, stop, next, and previous commands.
-- Print JSON for device and disc listings when scripts need structured output.
-
-Mini Disco currently targets Linux USB NetMD devices only. It does not try to replace every Web MiniDisc Pro feature yet.
 
 ## Requirements
 
 - Linux.
 - Rust and Cargo.
-- A USB NetMD device and an inserted MiniDisc.
+- A USB NetMD device with an inserted MiniDisc.
 - USB permissions for your user.
 - `ffmpeg` in `PATH` for normal audio-file uploads.
 - `atracdenc` in `PATH` for LP2, LP105, and LP4 uploads.
 
-For USB permissions, start with:
+For USB permission guidance, run:
 
 ```sh
-cd mini-disco
 cargo run -- doctor
 ```
 
-Mini Disco uses the udev rules from [`webminidisc/extra/70-netmd.rules`](webminidisc/extra/70-netmd.rules) as the source of truth. Install those rules as `/etc/udev/rules.d/70-netmd.rules`, reload udev, and reconnect the NetMD device.
+Mini Disco needs permission to open the NetMD USB device. In practice that
+usually means installing NetMD udev rules as `/etc/udev/rules.d/70-netmd.rules`,
+reloading udev, and reconnecting the device.
 
-## Running It
+## Running
 
-From the repository root:
+From this repository root:
 
 ```sh
-cd mini-disco
 cargo run -- devices
 cargo run -- list
 ```
 
-To build a reusable local binary:
+Build a reusable local binary:
 
 ```sh
-cd mini-disco
 cargo build --release
 ./target/release/mini-disco devices
 ```
 
-Or install it from the local source tree:
+Install it from this source tree:
 
 ```sh
-cargo install --path mini-disco
+cargo install --path .
 mini-disco devices
 ```
 
-If more than one supported NetMD device is attached, list them first and pass the 1-based device number:
+If more than one supported NetMD device is attached, list them first and pass the
+1-based device number:
 
 ```sh
 mini-disco devices
@@ -102,7 +116,9 @@ mini-disco upload-m3u album.m3u --format lp2 --erase-first
 mini-disco upload-m3u album.m3u --format lp2 --group
 ```
 
-Playlist titles come from `#PLAYLIST`, or from `#EXTART` and `#EXTALB`, with the playlist file name as a fallback. Track titles come from preceding `#EXTINF` entries when present, otherwise from the source file name.
+Playlist titles come from `#PLAYLIST`, or from `#EXTART` and `#EXTALB`, with the
+playlist file name as a fallback. Track titles come from preceding `#EXTINF`
+entries when present, otherwise from the source file name.
 
 Edit disc metadata:
 
@@ -131,10 +147,14 @@ mini-disco eject
 
 ## Upload Formats
 
-`upload` accepts any file that your installed `ffmpeg` can decode, such as WAV, FLAC, MP3, AAC, or Ogg Vorbis.
+`upload` accepts any file that your installed `ffmpeg` can decode, such as WAV,
+FLAC, MP3, AAC, or Ogg Vorbis.
 
-- `sp` uses `ffmpeg` to produce 44.1 kHz stereo big-endian PCM and sends it over the normal NetMD PCM upload path.
-- `lp2`, `lp105`, and `lp4` use `ffmpeg` to make a temporary WAV, then `atracdenc` to encode ATRAC3. Mini Disco strips the OMA header before transfer.
+- `sp` uses `ffmpeg` to produce 44.1 kHz stereo big-endian PCM and sends it over
+  the normal NetMD PCM upload path.
+- `lp2`, `lp105`, and `lp4` use `ffmpeg` to make a temporary WAV, then
+  `atracdenc` to encode ATRAC3. Mini Disco strips the OMA header before
+  transfer.
 
 `upload-raw` is for already prepared bytes:
 
@@ -142,7 +162,8 @@ mini-disco eject
 mini-disco upload-raw track.raw --format sp --title "Prepared Track"
 ```
 
-For SP raw files, the input must be big-endian 16-bit stereo PCM. For LP modes, the input must be headerless ATRAC3 frames.
+For SP raw files, the input must be big-endian 16-bit stereo PCM. For LP modes,
+the input must be headerless ATRAC3 frames.
 
 You can test conversion without touching a disc:
 
@@ -153,29 +174,23 @@ mini-disco convert song.flac song-lp2.raw --format lp2
 
 ## Safety Notes
 
-Commands that change the disc refuse to write when the disc is not writable or the write-protect tab is enabled. Upload commands check available capacity before transfer when the device reports remaining time.
+Commands that change the disc refuse to write when the disc is not writable or
+the write-protect tab is enabled. Upload commands check available capacity before
+transfer when the device reports remaining time.
 
 Track numbers are the 1-based numbers printed by `mini-disco list`.
 
-## More CLI Detail
+## Project Layout
 
-See [`mini-disco/docs/cli.md`](mini-disco/docs/cli.md) for the command reference and implementation notes.
+- `src/` contains the CLI application, audio conversion, M3U parsing, output
+  formatting, and NetMD device boundary.
+- `vendor/minidisc/` contains the vendored Rust `minidisc` crate used for NetMD
+  protocol work.
+- `docs/cli.md` has the command reference and implementation notes.
+- `docs/adr/` records project decisions.
 
-## Todo: Web Version Parity
+## Not Implemented Yet
 
-Mini Disco intentionally started as a narrow Linux CLI. These are the larger Web MiniDisc Pro features and polish items still missing from the Rust tool:
-
-- Terminal UI for browsing discs and choosing actions interactively.
-- Track download support, including standard NetMD download for Sony MZ-RH1.
-- Factory-mode download support for broader Sony and Aiwa NetMD devices.
-- Factory-mode tools such as firmware dumping, RAM dumping, TOC manipulation, and bad-sector workflows.
-- Remote NetMD support for devices exposed over the local network.
-- Hi-MD support.
-- Song recognition and metadata lookup.
-- Local library management.
-- Import of existing ATRAC1/AEA SP files through the factory/exploit path.
-- Richer device capability detection and clearer per-device support reporting.
-- Cross-platform support beyond Linux.
-- Packaged releases so users do not need a Rust toolchain.
-
-Not all of those belong in the CLI forever, but they are the main gaps to keep visible while Mini Disco grows up from a focused terminal tool into something closer to the web app's coverage.
+The main deferred areas are terminal UI work, track download support,
+factory-mode workflows, remote NetMD, Hi-MD, metadata lookup, local library
+management, cross-platform support, and packaged releases.
